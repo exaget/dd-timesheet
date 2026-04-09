@@ -11140,7 +11140,11 @@ async function loadStaffList() {
     sel.innerHTML = allStaffList.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
     const mine = allStaffList.find(s => s.id === currentStaff.id);
     if (mine) { sel.value = mine.id; updateEntryFormForStaff(mine.timesheetProfile); }
-    else {
+    else if (window._isManager) {
+      // Manager not in their own direct-report list — load their own profile directly
+      if (currentStaff?.timesheetProfile) updateEntryFormForStaff(currentStaff.timesheetProfile);
+      // Leave sel.value unset so getActiveStaffId() falls back to currentStaff.id
+    } else {
       // Admin not in staff list (e.g. webmaster) — apply profile of first staff in dropdown
       const first = allStaffList[0];
       if (first) { sel.value = first.id; updateEntryFormForStaff(first.timesheetProfile); }
