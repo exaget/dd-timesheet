@@ -12085,7 +12085,13 @@ function renderReportBody() {
   const fmtH = h => (h||0).toFixed(2);
   const fmtGBP = v => '£' + (v||0).toFixed(2);
 
+  // Managers only see their direct reports
+  const directReportIds = window._isManager
+    ? new Set(allStaffList.filter(s => s.managerId === currentStaff.id).map(s => s.id))
+    : null;
+
   container.innerHTML = reportData.map((r, ri) => {
+    if (directReportIds && !directReportIds.has(r.staffId)) return '';
     const entries = r._entries || [];
 
     // Volunteers get a simple row — no payroll breakdown
