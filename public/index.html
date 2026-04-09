@@ -11171,18 +11171,21 @@ function getActiveStaffId() {
 async function loadStaffList() {
   try {
     const d = await api('GET', '/api/staff'); allStaffList = d.staff||[];
-    const sel = document.getElementById('selectedStaffId');
-    sel.innerHTML = allStaffList.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
-    const mine = allStaffList.find(s => s.id === currentStaff.id);
-    if (mine) { sel.value = mine.id; updateEntryFormForStaff(mine.timesheetProfile); }
-    else if (window._isManager) {
-      // Manager not in their own direct-report list — load their own profile directly
+    if (window._isManager) {
+      // Managers: populate allStaffList for report filtering but don't touch the
+      // select element — its value must stay empty so getActiveStaffId() returns
+      // currentStaff.id rather than the first direct report in the list.
       if (currentStaff?.timesheetProfile) updateEntryFormForStaff(currentStaff.timesheetProfile);
-      // Leave sel.value unset so getActiveStaffId() falls back to currentStaff.id
     } else {
-      // Admin not in staff list (e.g. webmaster) — apply profile of first staff in dropdown
-      const first = allStaffList[0];
-      if (first) { sel.value = first.id; updateEntryFormForStaff(first.timesheetProfile); }
+      const sel = document.getElementById('selectedStaffId');
+      sel.innerHTML = allStaffList.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+      const mine = allStaffList.find(s => s.id === currentStaff.id);
+      if (mine) { sel.value = mine.id; updateEntryFormForStaff(mine.timesheetProfile); }
+      else {
+        // Admin not in staff list (e.g. webmaster) — apply profile of first staff in dropdown
+        const first = allStaffList[0];
+        if (first) { sel.value = first.id; updateEntryFormForStaff(first.timesheetProfile); }
+      }
     }
   } catch {}
 }
