@@ -11238,16 +11238,13 @@ async function renderSummary() {
   try {
     const [fyData, leaveEarnedData] = await Promise.all([
       api('GET', `/api/entries?staffId=${staffId}&start=${fyStart}&end=${fyEnd}`).catch(()=>({entries:[]})),
-      api('GET', `/api/payroll/leave-earned?staffId=${staffId}&fyYear=${fyStartYear}`).catch(()=>({totalAdditionalLeave:0})),
+      api('GET', `/api/payroll/leave-earned?staffId=${staffId}&fyYear=${fyStartYear}`).catch(()=>({totalAdditionalLeave:0, totalLieuBanked:0})),
     ]);
     const fyEntries = fyData.entries || [];
     fyAnnualTaken = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='annual'&&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
     fySickTaken   = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='sick'  &&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
     fyLieuTaken   = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='lieu'  &&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
-    // Lieu banked: sum from locked payroll runs
-    const runsData = await api('GET', `/api/payroll/runs?full=1&fyYear=${fyStartYear}`).catch(()=>({runs:[]}));
-    const fyRuns = runsData.runs || [];
-    fyLieuBanked = fyRuns.filter(r=>r.status==='finalised').reduce((s,r)=>s+(r.employees?.[staffId]?.lieuBanked||0),0);
+    fyLieuBanked          = leaveEarnedData.totalLieuBanked      || 0;
     additionalLeaveEarned = leaveEarnedData.totalAdditionalLeave || 0;
   } catch {}
 
