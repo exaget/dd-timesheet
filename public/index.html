@@ -10730,7 +10730,7 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
     <!-- Summary -->
     <div class="card" style="margin-bottom:20px">
       <div class="card-title">Employee Summary</div>
-      <div class="card-sub">Balances are live. Period totals are for the selected time range.</div>
+      <div class="card-sub">Balances are live. Work hours cover the pay period (17th–16th); leave totals cover the calendar month.</div>
       <div class="card-note">These numbers are indicative only. Correct figures will be in the payslip issued</div>
       <div class="summary-grid">
         <div>
@@ -10744,14 +10744,16 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 24px">
             <div>
               <div class="summary-row"><span class="label">Work Hours</span><span class="value num" id="sumWork">—</span></div>
-              <div class="summary-row"><span class="label">Additional Hours</span>  <span class="value num" id="sumAdditionalHrs">—</span></div>
+              <div class="summary-row"><span class="label" id="labelAdditionalHrs">Additional Hours</span>  <span class="value num" id="sumAdditionalHrs">—</span></div>
               <div class="summary-row"><span class="label">Volunteer</span> <span class="value num" id="sumVol">—</span></div>
+              <div class="summary-row" id="rowPriorAdj" style="display:none"><span class="label">Prior Month Adj.</span><span class="value num" id="sumPriorAdj">—</span></div>
             </div>
             <div>
               <div class="summary-row"><span class="label">Annual</span><span class="value num" id="sumAnnual">—</span></div>
               <div class="summary-row"><span class="label">Sick</span>  <span class="value num" id="sumSick">—</span></div>
               <div class="summary-row"><span class="label">Lieu</span>  <span class="value num" id="sumLieu">—</span></div>
               <div class="summary-row"><span class="label">Unpaid</span><span class="value num" id="sumUnpaid">—</span></div>
+              <div class="summary-row" id="rowPriorUnpaid" style="display:none"><span class="label">Prior Unpaid Adj.</span><span class="value num" id="sumPriorUnpaid">—</span></div>
             </div>
           </div>
         </div>
@@ -11202,17 +11204,23 @@ async function renderSummary() {
   const staffId = getActiveStaffId();
   const staffObj = allStaffList.find(s=>s.id===staffId) || currentStaff;
   const profile = staffObj?.timesheetProfile || {};
+  const bankOT  = profile.overtimeBanking?.enabled || false;
   const {start, end} = getPeriodDates(periodYear, periodMonth);
 
-  // Period totals
-  const workH   = sum(periodEntries, e => e.type==='work',                          e => e.totalHours||0);
-  const annualH = sum(periodEntries, e => e.type==='leave'&&e.leaveType==='annual', e => e.hours||0);
-  const sickH   = sum(periodEntries, e => e.type==='leave'&&e.leaveType==='sick',   e => e.hours||0);
-  const lieuH   = sum(periodEntries, e => e.type==='leave'&&e.leaveType==='lieu',   e => e.hours||0);
-  const unpaidH = sum(periodEntries, e => e.type==='leave'&&e.leaveType==='unpaid', e => e.hours||0);
-  const volH    = sum(periodEntries, e => e.type==='volunteer',                      e => e.hours||0);
+  // Update label to reflect whether overtime is banked or paid out
+  setText('labelAdditionalHrs', bankOT ? 'Lieu Banked' : 'Additional Hours');
 
-  // Additional hours (based on period vs contracted hours)
+  // Work and volunteer hours come from the 17th-16th pay period (periodEntries)
+  const workH = sum(periodEntries, e => e.type==='work',      e => e.totalHours||0);
+  const volH  = sum(periodEntries, e => e.type==='volunteer', e => e.hours||0);
+
+  // Leave hours use the calendar month (1st–last) to match the backend payroll calculation,
+  // which uses a different date window for leave vs. work entries.
+  // periodMonth is 0-based (from Date.getMonth()), so month 4 = May; Date.UTC handles this correctly.
+  const calStart = new Date(Date.UTC(periodYear, periodMonth, 1)).toISOString().slice(0, 10);
+  const calEnd   = new Date(Date.UTC(periodYear, periodMonth + 1, 0)).toISOString().slice(0, 10);
+
+  // Contracted hours — 17th-16th period, day-by-day (matches backend)
   const history = profile.contractHistory || [];
   const contractedHrs = (() => {
     let total = 0;
@@ -11224,7 +11232,6 @@ async function renderSummary() {
     }
     return Math.round(total * 100) / 100;
   })();
-  const additionalHrs = Math.max(0, Math.round((workH + annualH + sickH + lieuH - contractedHrs) * 100) / 100);
 
   // Leave balances — from FY start (April)
   const now = new Date();
@@ -11232,27 +11239,46 @@ async function renderSummary() {
   const fyStart = `${fyStartYear}-04-01`;
   const fyEnd   = `${fyStartYear + 1}-03-31`;
 
-  // Fetch all approved leave entries since FY start for this staff member
+  let annualH = 0, sickH = 0, lieuH = 0, unpaidH = 0;
   let fyAnnualTaken = 0, fySickTaken = 0, fyLieuTaken = 0, fyLieuBanked = 0;
   let additionalLeaveEarned = 0;
+  let priorAdjHrs = 0, priorAdjPay = 0, priorLieuAdj = 0, priorUnpaidAdj = 0;
   try {
-    const [fyData, leaveEarnedData] = await Promise.all([
+    const [calLeaveData, fyData, leaveEarnedData, priorAdjData] = await Promise.all([
+      api('GET', `/api/entries?staffId=${staffId}&start=${calStart}&end=${calEnd}`).catch(()=>({entries:[]})),
       api('GET', `/api/entries?staffId=${staffId}&start=${fyStart}&end=${fyEnd}`).catch(()=>({entries:[]})),
       api('GET', `/api/payroll/leave-earned?staffId=${staffId}&fyYear=${fyStartYear}`).catch(()=>({totalAdditionalLeave:0, totalLieuBanked:0})),
+      api('GET', `/api/payroll/prior-adj-estimate?staffId=${staffId}&year=${periodYear}&month=${periodMonth + 1}`).catch(()=>({priorAdjHrs:0, priorAdjPay:0, priorLieuAdj:0, priorUnpaidAdj:0})),
     ]);
+
+    // Calendar-month leave (matches backend payroll calculation)
+    const calLeave = (calLeaveData.entries || []).filter(e => e.type==='leave' && (e.status==='approved'||e.status==='leave_approved'));
+    annualH = calLeave.filter(e=>e.leaveType==='annual').reduce((s,e)=>s+(e.hours||0),0);
+    sickH   = calLeave.filter(e=>e.leaveType==='sick').reduce((s,e)=>s+(e.hours||0),0);
+    lieuH   = calLeave.filter(e=>e.leaveType==='lieu').reduce((s,e)=>s+(e.hours||0),0);
+    unpaidH = calLeave.filter(e=>e.leaveType==='unpaid').reduce((s,e)=>s+(e.hours||0),0);
+
+    // FY totals for balance calculation
     const fyEntries = fyData.entries || [];
     fyAnnualTaken = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='annual'&&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
     fySickTaken   = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='sick'  &&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
     fyLieuTaken   = fyEntries.filter(e=>e.type==='leave'&&e.leaveType==='lieu'  &&(e.status==='approved'||e.status==='leave_approved')).reduce((s,e)=>s+(e.hours||0),0);
     fyLieuBanked          = leaveEarnedData.totalLieuBanked      || 0;
     additionalLeaveEarned = leaveEarnedData.totalAdditionalLeave || 0;
+
+    priorAdjHrs    = priorAdjData.priorAdjHrs    || 0;
+    priorAdjPay    = priorAdjData.priorAdjPay    || 0;
+    priorLieuAdj   = priorAdjData.priorLieuAdj   || 0;
+    priorUnpaidAdj = priorAdjData.priorUnpaidAdj || 0;
   } catch {}
 
+  const additionalHrs = Math.max(0, Math.round((workH + annualH + sickH + lieuH - contractedHrs) * 100) / 100);
+
   const ent = profile.leaveEntitlements || {};
-  const annualEnt  = (ent.annual||0) + (ent.annualCarryOver||0) + additionalLeaveEarned;
-  const sickEnt    = (ent.sick||0)   + (ent.sickCarryOver||0);
-  const lieuStart  = profile.overtimeBanking?.initialBalance || 0;
-  const lieuBal    = Math.round((lieuStart + fyLieuBanked - fyLieuTaken) * 100) / 100;
+  const annualEnt = (ent.annual||0) + (ent.annualCarryOver||0) + additionalLeaveEarned;
+  const sickEnt   = (ent.sick||0)   + (ent.sickCarryOver||0);
+  const lieuStart = profile.overtimeBanking?.initialBalance || 0;
+  const lieuBal   = Math.round((lieuStart + fyLieuBanked - fyLieuTaken) * 100) / 100;
 
   setText('balAnnual',  fmt(Math.round((annualEnt - fyAnnualTaken) * 100) / 100) + 'h');
   setText('balSick',    fmt(Math.round((sickEnt   - fySickTaken)   * 100) / 100) + 'h');
@@ -11264,6 +11290,22 @@ async function renderSummary() {
   setText('sumSick',    fmt(sickH)         + 'h');
   setText('sumLieu',    fmt(lieuH)         + 'h');
   setText('sumUnpaid',  fmt(unpaidH)       + 'h');
+
+  // Prior month adjustment rows — show only when non-zero
+  const priorAdjDisplay = bankOT ? priorLieuAdj : priorAdjHrs;
+  const showPriorAdj = priorAdjDisplay !== 0;
+  const el = document.getElementById('rowPriorAdj');
+  if (el) el.style.display = showPriorAdj ? '' : 'none';
+  if (showPriorAdj) {
+    const sign = priorAdjDisplay > 0 ? '+' : '';
+    const extra = bankOT ? '' : ` (£${Math.abs(priorAdjPay).toFixed(2)})`;
+    setText('sumPriorAdj', `${sign}${fmt(priorAdjDisplay)}h${extra}`);
+  }
+
+  const showPriorUnpaid = priorUnpaidAdj > 0;
+  const elU = document.getElementById('rowPriorUnpaid');
+  if (elU) elU.style.display = showPriorUnpaid ? '' : 'none';
+  if (showPriorUnpaid) setText('sumPriorUnpaid', `-£${priorUnpaidAdj.toFixed(2)}`);
 }
 
 function renderEntriesTable() {
