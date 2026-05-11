@@ -11216,8 +11216,9 @@ async function renderSummary() {
 
   // Leave hours use the calendar month (1st–last) to match the backend payroll calculation,
   // which uses a different date window for leave vs. work entries.
-  const calStart = `${periodYear}-${String(periodMonth).padStart(2,'0')}-01`;
-  const calEnd   = new Date(Date.UTC(periodYear, periodMonth, 0)).toISOString().slice(0,10);
+  // periodMonth is 0-based (from Date.getMonth()), so month 4 = May; Date.UTC handles this correctly.
+  const calStart = new Date(Date.UTC(periodYear, periodMonth, 1)).toISOString().slice(0, 10);
+  const calEnd   = new Date(Date.UTC(periodYear, periodMonth + 1, 0)).toISOString().slice(0, 10);
 
   // Contracted hours — 17th-16th period, day-by-day (matches backend)
   const history = profile.contractHistory || [];
@@ -11247,7 +11248,7 @@ async function renderSummary() {
       api('GET', `/api/entries?staffId=${staffId}&start=${calStart}&end=${calEnd}`).catch(()=>({entries:[]})),
       api('GET', `/api/entries?staffId=${staffId}&start=${fyStart}&end=${fyEnd}`).catch(()=>({entries:[]})),
       api('GET', `/api/payroll/leave-earned?staffId=${staffId}&fyYear=${fyStartYear}`).catch(()=>({totalAdditionalLeave:0, totalLieuBanked:0})),
-      api('GET', `/api/payroll/prior-adj-estimate?staffId=${staffId}&year=${periodYear}&month=${periodMonth}`).catch(()=>({priorAdjHrs:0, priorAdjPay:0, priorLieuAdj:0, priorUnpaidAdj:0})),
+      api('GET', `/api/payroll/prior-adj-estimate?staffId=${staffId}&year=${periodYear}&month=${periodMonth + 1}`).catch(()=>({priorAdjHrs:0, priorAdjPay:0, priorLieuAdj:0, priorUnpaidAdj:0})),
     ]);
 
     // Calendar-month leave (matches backend payroll calculation)
