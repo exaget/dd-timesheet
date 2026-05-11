@@ -1950,3 +1950,84 @@ app.http("payrollLeaveEarned", {
     }
   },
 });
+
+// Estimate prior-month adjustment for the Employee Summary.
+// Mirrors the logic in calcPayrollForStaff but accessible to any authenticated user for their own staffId.
+app.http("payrollPriorAdjEstimate", {
+  methods: ["GET"],
+  route: "payroll/prior-adj-estimate",
+  handler: async (req, context) => {
+    try {
+      const caller = await requireAuth(req);
+      if (!caller) return err("Unauthorised", 401);
+
+      const url     = new URL(req.url);
+      const staffId = url.searchParams.get("staffId") || caller.id;
+      const year    = parseInt(url.searchParams.get("year"));
+      const month   = parseInt(url.searchParams.get("month"));
+
+      if (!year || !month || month < 1 || month > 12) return err("year and month required", 400);
+      if (staffId !== caller.id && caller.access?.timesheets !== "admin") return err("Forbidden", 403);
+
+      const prevMonth = month === 1 ? 12 : month - 1;
+      const prevYear  = month === 1 ? year - 1 : year;
+
+      const priorRun = await cosmos.getPayrollRun(prevYear, prevMonth);
+      if (!priorRun || priorRun.status !== "finalised") {
+        return json({ priorAdjHrs: 0, priorAdjPay: 0, priorLieuAdj: 0, priorUnpaidAdj: 0, hasPriorRun: false });
+      }
+
+      const prEmp = priorRun.employees?.[staffId];
+      if (!prEmp) {
+        return json({ priorAdjHrs: 0, priorAdjPay: 0, priorLieuAdj: 0, priorUnpaidAdj: 0, hasPriorRun: true });
+      }
+
+      const staff = await cosmos.getStaffById(staffId);
+      if (!staff) return err("Staff not found", 404);
+
+      // Fetch entries for the previous period (same date range as payroll/calculate uses for recalc)
+      const prevPrevMonth   = prevMonth === 1 ? 12 : prevMonth - 1;
+      const prevPrevYear    = prevMonth === 1 ? prevYear - 1 : prevYear;
+      const prevPeriodStart = isoDate(prevPrevYear, prevPrevMonth, 17);
+      const prevCalEnd      = isoDate(prevYear, prevMonth, daysInMonth(prevYear, prevMonth));
+
+      const prevEntries = await cosmos.getEntriesByStaffAndPeriod(staffId, prevPeriodStart, prevCalEnd);
+
+      // Recalculate previous period with current entries (includePending = true, same as payroll/calculate)
+      const recalc = calcPayrollForStaff(staff, prevYear, prevMonth, prevEntries, null, false, true);
+
+      const r2 = (n) => Math.round((n || 0) * 100) / 100;
+      const bankOT = staff.timesheetProfile?.overtimeBanking?.enabled || false;
+
+      const recalcTotal = recalc.totalPaidHrs;
+      const prevTotal   = prEmp.totalPaidHrs            || 0;
+      const prevContr   = prEmp.contractualHrsPeriod    || 0;
+      const prevOTHrs   = prEmp.overtimeHrs             || 0;
+      const priorRate   = prEmp.rateOn16                || 0;
+      const prevUnpaid  = prEmp.unpaidLeaveHrs          || 0;
+      const newUnpaid   = recalc.unpaidLeaveHrs         || 0;
+      const lateUnpaid  = Math.max(0, r2(newUnpaid - prevUnpaid));
+
+      let priorAdjHrs = 0, priorAdjPay = 0, priorLieuAdj = 0, priorUnpaidAdj = 0;
+
+      if (recalcTotal > prevTotal && recalcTotal > prevContr) {
+        priorAdjHrs  = Math.min(r2(recalcTotal - prevTotal), r2(recalcTotal - prevContr));
+        priorAdjPay  = bankOT ? 0 : r2(priorAdjHrs * priorRate);
+        priorLieuAdj = bankOT ? priorAdjHrs : 0;
+      } else if (recalcTotal < prevTotal && prevOTHrs > 0) {
+        const deductHrs = Math.min(r2(prevTotal - recalcTotal), prevOTHrs);
+        priorAdjHrs  = -deductHrs;
+        priorAdjPay  = bankOT ? 0 : -r2(deductHrs * priorRate);
+        priorLieuAdj = bankOT ? -deductHrs : 0;
+      }
+
+      if (lateUnpaid > 0) {
+        priorUnpaidAdj = r2(lateUnpaid * priorRate);
+      }
+
+      return json({ priorAdjHrs, priorAdjPay, priorLieuAdj, priorUnpaidAdj, hasPriorRun: true });
+    } catch (e) {
+      return errFromException(e, "payrollPriorAdjEstimate");
+    }
+  },
+});
